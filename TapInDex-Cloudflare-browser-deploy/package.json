@@ -1,0 +1,32 @@
+{
+  "name": "tapindex-sharing",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test.mjs tools/*.test.mjs",
+    "build": "npm test",
+    "deploy": "node tools/deploy.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.3"
+  },
+  "cloudflare": {
+    "bindings": {
+      "SUPABASE_URL": {
+        "description": "Keep the Supabase project used by TapInDex account sign-in. This is a public project URL, not a key."
+      },
+      "SUPABASE_PUBLISHABLE_KEY": {
+        "description": "Paste the publishable client key for the existing Supabase account project. Never use a service-role or admin key."
+      },
+      "BACKUP_KEYS_JSON": {
+        "description": "Paste the complete JSON generated locally by START_HERE.html. Keep a secure copy. Do not generate a replacement key for an existing service."
+      },
+      "BACKUP_KEY_ID": {
+        "description": "For a new service use v1. This must match a key in BACKUP_KEYS_JSON."
+      }
+    }
+  }
+}

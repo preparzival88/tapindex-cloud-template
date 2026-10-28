@@ -1,0 +1,27 @@
+{
+  "name": "tapindex-sharing",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "vars": {
+    "SUPABASE_URL": "https://lpxejvltwbhzlptdwxog.supabase.co"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tapindex-sharing",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "tapindex-private-sharing"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "17 * * * *"
+    ]
+  }
+}

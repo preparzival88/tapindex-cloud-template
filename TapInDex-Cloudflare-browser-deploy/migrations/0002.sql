@@ -1,0 +1,5 @@
+CREATE TABLE primary_devices(owner TEXT PRIMARY KEY REFERENCES profiles(id), device TEXT NOT NULL, changed INTEGER NOT NULL);
+CREATE TABLE recovery(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,owner TEXT NOT NULL REFERENCES profiles(id),device TEXT NOT NULL,size INTEGER NOT NULL,hash TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'staging',created INTEGER NOT NULL,published TEXT);
+CREATE INDEX recovery_owner ON recovery(owner,status,sequence);
+CREATE TABLE recovery_parts(backup TEXT NOT NULL REFERENCES recovery(id) ON DELETE CASCADE,part INTEGER NOT NULL,hash TEXT NOT NULL,size INTEGER NOT NULL,ready INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(backup,part));
+CREATE TABLE recovery_head(owner TEXT PRIMARY KEY REFERENCES profiles(id),backup TEXT NOT NULL,sequence INTEGER NOT NULL);
