@@ -1,8 +1,16 @@
-import {cloud, CloudError, requirePrimary, cleanupRecovery} from './cloud.mjs';
+import {cloud, CloudError, requirePrimary, cleanupRecovery, backupEncryptionConfigured} from './cloud.mjs';
 // Private sharing service. Supabase is used ONLY to verify the account bearer.
 const MAX_BODY = 512 * 1024, MAX_STORAGE = 50 * 1024 * 1024;
 class Failure extends Error { constructor(status, message) { super(message); this.status = status; } }
 const fail = (status, message) => { throw new Failure(status, message); };
+// Closed, non-sensitive categories only. Never attach an upstream body, token, URL, or raw exception.
+const identityFailure = (reason, status=503, message='Identity service unavailable', detail={}) => {
+  const error=new Failure(status,message); error.identityDiagnostic={reason,...detail}; throw error;
+};
+const identityFetchFailure = error => {
+  const error_type=['AbortError','TimeoutError','TypeError','RangeError'].includes(error?.name)?error.name:'Error';
+  identityFailure(error_type==='AbortError'||error_type==='TimeoutError'?'FETCH_TIMEOUT':'FETCH_ERROR',503,'Identity service unavailable',{error_type});
+};
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : fail(400, 'Invalid account or snapshot ID');
 const kind = value => ['collection','wishlist'].includes(value) ? value : fail(400, 'Invalid snapshot kind');
 const integer = (v, min, max) => Number.isSafeInteger(v) && v >= min && v <= max ? v : fail(400, 'Invalid count');
@@ -24,17 +32,20 @@ async function body(request) {
   if(!result || Array.isArray(result) || typeof result!=='object') fail(400,'Expected JSON object'); return result;
 }
 export async function authenticate(request, env, fetcher=fetch) {
-  if(!env.SUPABASE_URL || !env.SUPABASE_PUBLISHABLE_KEY) fail(503,'Service configuration incomplete');
-  const origin=new URL(env.SUPABASE_URL);
-  if(origin.protocol!=='https:' || origin.username || origin.password || origin.pathname!=='/' || origin.search || origin.hash) fail(503,'Service configuration invalid');
+  if(!env.SUPABASE_URL || !env.SUPABASE_PUBLISHABLE_KEY) identityFailure('CONFIG_MISSING',503,'Service configuration incomplete');
+  let origin; try { origin=new URL(env.SUPABASE_URL); } catch { identityFailure('CONFIG_INVALID',503,'Service configuration invalid'); }
+  if(origin.protocol!=='https:' || origin.username || origin.password || origin.pathname!=='/' || origin.search || origin.hash) identityFailure('CONFIG_INVALID',503,'Service configuration invalid');
   const bearer=request.headers.get('authorization') || '';
   if(!/^Bearer [A-Za-z0-9._~-]{16,8192}$/.test(bearer)) fail(401,'Unauthorized');
   let result;
   try { result=await fetcher(`${origin.origin}/auth/v1/user`, {headers:{Authorization:bearer,apikey:env.SUPABASE_PUBLISHABLE_KEY},redirect:'error',signal:AbortSignal.timeout(8000)}); }
-  catch { fail(503,'Identity service unavailable'); }
-  if(result.status===401 || result.status===403) fail(401,'Unauthorized');
-  if(!result.ok) fail(503,'Identity service unavailable');
-  let user; try {user=await body(result);} catch {fail(503,'Identity service unavailable');}
+  catch(error) { identityFetchFailure(error); }
+  if(result.status===401 || result.status===403) identityFailure('UPSTREAM_REJECTED',401,'Unauthorized',{upstream_status:result.status});
+  if(!result.ok) identityFailure('UPSTREAM_HTTP',503,'Identity service unavailable',{upstream_status:result.status});
+  let user; try {user=await body(result);} catch(error) {
+    if(error?.name==='AbortError'||error?.name==='TimeoutError') identityFetchFailure(error);
+    identityFailure('UPSTREAM_BODY',503,'Identity service unavailable',{upstream_status:result.status});
+  }
   if(user.is_anonymous || !user.email_confirmed_at) fail(403,'Confirm your account email first');
   return {id:uuid(user.id), name:typeof user.user_metadata?.display_name==='string' ? user.user_metadata.display_name.slice(0,80) : 'TapInDex friend'};
 }
@@ -158,19 +169,46 @@ export async function cleanup(env) {
   }
   await run(env,'DELETE FROM limits WHERE minute<?',Math.floor(Date.now()/60000)-60);
 }
+export async function readiness(env) {
+  let tables = new Set();
+  try { tables = new Set((await rows(env, "SELECT name FROM sqlite_master WHERE type='table'")).map(row => row.name)); } catch {}
+  const base = ['profiles','access','feeds','snapshots','chunks','limits'].every(name => tables.has(name));
+  const recovery = ['primary_devices','recovery','recovery_parts','recovery_head'].every(name => tables.has(name));
+  const account = !!env.SUPABASE_PUBLISHABLE_KEY && (() => {
+    try { const url = new URL(env.SUPABASE_URL); return url.protocol === 'https:' && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash; } catch { return false; }
+  })();
+  const storage = typeof env.FILES?.get === 'function' && typeof env.FILES?.put === 'function';
+  const encryption = await backupEncryptionConfigured(env);
+  return {service:'TapInDex readiness',database_bound:typeof env.DB?.prepare==='function',account_configured:account,sharing_schema_ready:base,recovery_schema_ready:recovery,
+    storage_bound:storage,backup_encryption_configured:encryption,sharing_ready:account && base && storage,
+    backup_ready:account && base && recovery && storage && encryption};
+}
 export default {
   async fetch(request, env) {
+    let phase = 'route';
     try {
       const url=new URL(request.url);
-      if(request.method==='GET' && url.pathname==='/health') return response({service:'TapInDex sharing',version:1});
+      if(request.method==='GET' && url.pathname==='/health/ready') { const ready=await readiness(env); return response(ready,ready.sharing_ready&&ready.backup_ready?200:503); }
+      if(request.method==='GET' && url.pathname==='/health') return response({service:'TapInDex sharing',version:1,identity_diagnostics:1});
       if(request.method!=='POST' || !/^\/v1\/(sharing\/(list|request|grant|revoke|begin|stage|publish|discard|page|unpublish)|cloud\/(status|claim|begin|stage|commit|chunk|discard))$/.test(url.pathname)) fail(404,'Not found');
-      const p=await body(request), actor=await authenticate(request,env);
+      const p=await body(request); phase='identity'; const actor=await authenticate(request,env); phase='storage';
       // Authorization reads start at the primary, never an eventually-consistent permission cache.
       const session={...env,DB:env.DB.withSession('first-primary')};
       const op=url.pathname.split('/').pop();
       if(url.pathname.startsWith('/v1/cloud/')) { await register(session,actor,'cloud'); return response(await cloud(session,actor,op,p)); }
       return response(await dispatch(session,actor,op,p));
-    } catch(e) { return response({message:(e instanceof Failure || e instanceof CloudError)?e.message:'Service temporarily unavailable'},(e instanceof Failure || e instanceof CloudError)?e.status:503); }
+    } catch(e) {
+      const known=e instanceof Failure || e instanceof CloudError;
+      const identity=known&&phase==='identity'?e.identityDiagnostic:undefined;
+      const code=known ? (e.status===503 && phase==='identity' ? 'HDX_IDENTITY_UNAVAILABLE' : identity?'HDX_IDENTITY_REJECTED':undefined) : 'HDX_STORAGE_UNAVAILABLE';
+      if(identity) console.error(JSON.stringify({event:'tapindex-request-failed',phase,code,...identity}));
+      else if(!known) {
+        const detail=String(e?.cause?.message || e?.message || '');
+        const reason=/no such table/i.test(detail)?'SCHEMA_MISSING':/D1_/i.test(detail)?'D1_ERROR':/R2/i.test(detail)?'R2_ERROR':'STORAGE_ERROR';
+        console.error(JSON.stringify({event:'tapindex-request-failed',phase,code,reason}));
+      }
+      return response({message:known?e.message:'Service temporarily unavailable',...(code?{code}:{}),...(identity||{})},known?e.status:503);
+    }
   },
   async scheduled(event,env,ctx) { ctx.waitUntil(Promise.all([cleanup(env),cleanupRecovery(env)])); }
 };
