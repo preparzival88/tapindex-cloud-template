@@ -73,3 +73,9 @@ export async function cleanupRecovery(env){
  await run(env,`UPDATE recovery SET status='discarded' WHERE status='sealed' AND id NOT IN (SELECT backup FROM recovery_head) AND created<? AND (SELECT count(*) FROM recovery newer WHERE newer.owner=recovery.owner AND newer.status='sealed' AND newer.sequence>recovery.sequence)>=3`,Date.now()-86400000);
  const old=await all(env,"SELECT * FROM recovery WHERE status='discarded' LIMIT 10");for(const s of old){await env.FILES.delete(Array.from({length:Math.ceil(s.size/CHUNK)},(_,i)=>path(s,i)));await run(env,"DELETE FROM recovery WHERE id=? AND status='discarded'",s.id);}
 }
+
+// Public readiness returns only a boolean; never the key or its parse/crypto failure details.
+export async function backupEncryptionConfigured(env) {
+ try { if (!env.BACKUP_KEY_ID) return false; await encryptionKey(env, env.BACKUP_KEY_ID); return true; }
+ catch { return false; }
+}
