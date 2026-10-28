@@ -66,7 +66,7 @@ test('rate and staging quotas; identity verifier never trusts body or unverified
  const f=fixture();for(let i=0;i<4;i++)await f.call(f.a,'begin',{p_kind:'collection',p_count:1});await assert.rejects(f.call(f.a,'begin',{p_kind:'collection',p_count:1}),e=>e.status===429);
  await f.call(f.b,'list');for(let i=0;i<20;i++)await f.call(f.a,'request',{p_owner:f.b.id});await assert.rejects(f.call(f.a,'request',{p_owner:f.b.id}),e=>e.status===429);
  const req=new Request('https://sharing.test/v1/sharing/list',{method:'POST',headers:{authorization:'Bearer fixture-token-12345'}});
- const verified=await authenticate(req,f.env,async(url,opts)=>{assert.equal(url,'https://fixture.supabase.co/auth/v1/user');assert.equal(opts.redirect,'error');return Response.json({id:f.a.id,email_confirmed_at:'today',user_metadata:{display_name:'Verified'}});});assert.equal(verified.id,f.a.id);
+ const verified=await authenticate(req,f.env,async(url,opts)=>{assert.equal(url,'https://fixture.supabase.co/auth/v1/user');assert.equal(opts.redirect,'manual');return Response.json({id:f.a.id,email_confirmed_at:'today',user_metadata:{display_name:'Verified'}});});assert.equal(verified.id,f.a.id);
  await assert.rejects(authenticate(req,f.env,async()=>new Response('',{status:401})),e=>e.status===401);
  await assert.rejects(authenticate(req,f.env,async()=>{throw Error('offline');}),e=>e.status===503);
  const huge=new Request(req.url,{method:'POST',body:'x'.repeat(512*1024+1)});assert.equal((await worker.fetch(huge,f.env)).status,413);
