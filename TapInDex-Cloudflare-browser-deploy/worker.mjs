@@ -38,8 +38,9 @@ export async function authenticate(request, env, fetcher=fetch) {
   const bearer=request.headers.get('authorization') || '';
   if(!/^Bearer [A-Za-z0-9._~-]{16,8192}$/.test(bearer)) fail(401,'Unauthorized');
   let result;
-  try { result=await fetcher(`${origin.origin}/auth/v1/user`, {headers:{Authorization:bearer,apikey:env.SUPABASE_PUBLISHABLE_KEY},redirect:'error',signal:AbortSignal.timeout(8000)}); }
+  try { result=await fetcher(`${origin.origin}/auth/v1/user`, {headers:{Authorization:bearer,apikey:env.SUPABASE_PUBLISHABLE_KEY},redirect:'manual',signal:AbortSignal.timeout(8000)}); }
   catch(error) { identityFetchFailure(error); }
+  if(result.status>=300 && result.status<400) identityFailure('UPSTREAM_REDIRECT',503,'Identity service unavailable',{upstream_status:result.status});
   if(result.status===401 || result.status===403) identityFailure('UPSTREAM_REJECTED',401,'Unauthorized',{upstream_status:result.status});
   if(!result.ok) identityFailure('UPSTREAM_HTTP',503,'Identity service unavailable',{upstream_status:result.status});
   let user; try {user=await body(result);} catch(error) {
@@ -189,7 +190,7 @@ export default {
     try {
       const url=new URL(request.url);
       if(request.method==='GET' && url.pathname==='/health/ready') { const ready=await readiness(env); return response(ready,ready.sharing_ready&&ready.backup_ready?200:503); }
-      if(request.method==='GET' && url.pathname==='/health') return response({service:'TapInDex sharing',version:1,identity_diagnostics:1});
+      if(request.method==='GET' && url.pathname==='/health') return response({service:'TapInDex sharing',version:1,identity_diagnostics:2});
       if(request.method!=='POST' || !/^\/v1\/(sharing\/(list|request|grant|revoke|begin|stage|publish|discard|page|unpublish)|cloud\/(status|claim|begin|stage|commit|chunk|discard))$/.test(url.pathname)) fail(404,'Not found');
       const p=await body(request); phase='identity'; const actor=await authenticate(request,env); phase='storage';
       // Authorization reads start at the primary, never an eventually-consistent permission cache.
